@@ -79,3 +79,9 @@ Project Gutenberg (+Gutendex), Open Library public scans (archive.org),
 Unpaywall-reported OA copies. No site is scraped in a way that ignores its
 terms; no paywall or login is bypassed. Non-open works are handed to wanted.md
 for manual decision. That split is the point of this tool.
+
+## Licence
+
+md-acquire's own code is MIT-licensed (see `LICENSE`). The repositories under
+`Extract test/` are third-party code and keep their own licences (or lack of one);
+the MIT licence does not apply to them.

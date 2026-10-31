@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----------------------------------------------------------------------------
-Scope: this licence covers md-acquire's own code (pipeline/, tests/,
-scripts/, specs/, docs/ and the root files). The repositories under
-"Extract test/" are third-party code and keep their own licences (or lack
-of one); this licence does not apply to them.
