@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import html
 import json
+import secrets
 import sys
 import threading
 import webbrowser
@@ -199,7 +201,11 @@ const logEl = document.getElementById('log');
 const buttons = [...document.querySelectorAll('button')];
 let polling = false;
 function setBusy(b) { buttons.forEach(x => x.disabled = b); }
-async function run(url) { await fetch(url); poll(); }
+const TOKEN = document.querySelector('meta[name="ui-token"]').content;
+async function run(url) {
+  await fetch(url, { method: 'POST', headers: { 'X-UI-Token': TOKEN } });
+  poll();
+}
 async function poll() {
   if (polling) return;
   polling = true; setBusy(true);
@@ -223,9 +229,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 """
 
 
-def dashboard_html(rows: list[dict], problems: list[dict], status: dict) -> str:
+def dashboard_html(rows: list[dict], problems: list[dict], status: dict,
+                   token: str = "") -> str:
     out = ["<!doctype html><html lang='en'><head><meta charset='utf-8'>",
            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+           f"<meta name='ui-token' content='{html.escape(token, quote=True)}'>",
            "<title>md-acquire — trigger UI</title>",
            "<style>", _CSS, "</style></head><body><main>",
            "<h1>md-acquire <span>— trigger UI</span></h1>",
@@ -277,14 +285,63 @@ def dashboard_html(rows: list[dict], problems: list[dict], status: dict) -> str:
     return "".join(out)
 
 
-def make_handler(config_path: str, job: Job | None = None):
+def make_handler(config_path: str, job: Job | None = None, *,
+                 port: int = 8619, token: str | None = None):
+    """Build the request handler.
+
+    CSRF / DNS-rebinding guard: every request must carry a loopback Host header,
+    and the state-changing routes (/run, /test) are POST-only and need the
+    per-process token (embedded in the dashboard page) in an X-UI-Token header.
+    A cross-site page can neither read that token nor set a custom header.
+    """
     _job = job or _SHARED_JOB
+    _token = token or secrets.token_urlsafe(32)
+    _allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "md-acquire-ui/0.1"
 
         def log_message(self, fmt, *args) -> None:   # keep the console clean
             pass
+
+        def _host_ok(self) -> bool:
+            if self.headers.get("Host", "") in _allowed_hosts:
+                return True
+            self._json({"ok": False, "error": "bad host"}, 403)
+            return False
+
+        def do_POST(self) -> None:
+            if not self._host_ok():
+                return
+            sent = self.headers.get("X-UI-Token", "")
+            if not hmac.compare_digest(sent.encode(), _token.encode()):
+                self._json({"ok": False, "error": "bad or missing token"}, 403)
+                return
+            u = urlparse(self.path)
+            try:
+                if u.path == "/run":
+                    cfg = Config.load(config_path)
+                    q = parse_qs(u.query)
+                    mode = (q.get("mode") or ["run"])[0]
+                    key = (q.get("spec") or [None])[0]
+                    started = _job.start(
+                        "bulk run",
+                        _bulk_work(cfg, force=mode == "force", dry_run=mode == "dry",
+                                   only={key} if key else None),
+                    )
+                    self._json({"ok": True, "started": started, "busy": not started})
+                elif u.path == "/test":
+                    started = _job.start("test suite", _pytest_work())
+                    self._json({"ok": True, "started": started, "busy": not started})
+                else:
+                    self._json({"ok": False, "error": "unknown route"}, 404)
+            except BrokenPipeError:
+                pass
+            except Exception as exc:
+                try:
+                    self._json({"ok": False, "error": repr(exc)}, 500)
+                except Exception:
+                    pass
 
         def _send(self, code: int, body: bytes, ctype: str) -> None:
             self.send_response(code)
@@ -299,29 +356,19 @@ def make_handler(config_path: str, job: Job | None = None):
                        "application/json; charset=utf-8")
 
         def do_GET(self) -> None:
+            if not self._host_ok():
+                return
             u = urlparse(self.path)
             try:
                 if u.path == "/":
                     cfg = Config.load(config_path)
                     rows, problems = spec_rows(cfg)
-                    self._send(200, dashboard_html(rows, problems, _job.status()).encode("utf-8"),
-                               "text/html; charset=utf-8")
+                    page = dashboard_html(rows, problems, _job.status(), _token)
+                    self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                 elif u.path == "/status":
                     self._json(_job.status())
-                elif u.path == "/run":
-                    cfg = Config.load(config_path)
-                    q = parse_qs(u.query)
-                    mode = (q.get("mode") or ["run"])[0]
-                    key = (q.get("spec") or [None])[0]
-                    started = _job.start(
-                        "bulk run",
-                        _bulk_work(cfg, force=mode == "force", dry_run=mode == "dry",
-                                   only={key} if key else None),
-                    )
-                    self._json({"ok": True, "started": started, "busy": not started})
-                elif u.path == "/test":
-                    started = _job.start("test suite", _pytest_work())
-                    self._json({"ok": True, "started": started, "busy": not started})
+                elif u.path in ("/run", "/test"):
+                    self._json({"ok": False, "error": "POST only"}, 405)
                 elif u.path == "/file":
                     name = (parse_qs(u.query).get("name") or [""])[0]
                     if name not in _FILE_WHITELIST:
@@ -356,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     job = Job()
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.config, job))
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.config, job, port=a.port))
     url = f"http://127.0.0.1:{a.port}/"
     print(f"md-acquire UI on {url}   (Ctrl+C stops)")
     if a.open:
