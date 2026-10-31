@@ -9,3 +9,6 @@ Extract test/**/*.epub
 Extract test/**/The Nature of Right and Wrong_*.xml
 # browser debug logs
 *.log
+# public-domain sample input (Pride and Prejudice, Gutenberg)
+!Extract test/AA Download extractor/AA Extractor/pdf_to_epub_generator/input_book.pdf
+!Extract test/AA Download extractor/AA Extractor/pdf_to_epub_generator/Test/input_book.pdf
