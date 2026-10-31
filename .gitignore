@@ -1,0 +1,7 @@
+.venv/
+library/
+__pycache__/
+.pytest_cache/
+*.pyc
+# third-party repos + a copyrighted PDF: never publish
+Extract test/

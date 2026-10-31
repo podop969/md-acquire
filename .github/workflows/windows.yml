@@ -1,0 +1,36 @@
+name: windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Test
+        shell: pwsh
+        run: python -m pytest -v
+      - name: CLI smoke
+        shell: pwsh
+        run: |
+          python -m pipeline.cli --help
+          python -m pipeline.bulk --dry-run
+        env:
+          ACQUIRE_EMAIL: ci@example.org
