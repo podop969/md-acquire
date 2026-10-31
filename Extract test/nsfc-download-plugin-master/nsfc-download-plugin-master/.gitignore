@@ -1,0 +1,26 @@
+# User-specific config (contains credentials and personal paths)
+config.py
+.env
+
+# Task tracking data (user-specific research data)
+task_list.csv
+
+# Downloaded reports
+*.pdf
+nsfc-reports/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

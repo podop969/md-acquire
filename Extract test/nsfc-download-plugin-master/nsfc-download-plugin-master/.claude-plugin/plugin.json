@@ -1,0 +1,11 @@
+{
+  "name": "nsfc-download",
+  "description": "Download NSFC final research reports as PDFs via Chrome CDP automation. Search projects by keywords, navigate pagination, and assemble report images into PDFs.",
+  "version": "1.0.0",
+  "author": {
+    "name": "maxuemx1988-hue"
+  },
+  "repository": "https://github.com/maxuemx1988-hue/nsfc-download-plugin",
+  "license": "MIT",
+  "keywords": ["nsfc", "research", "report", "download", "pdf", "browser-automation", "cdp"]
+}

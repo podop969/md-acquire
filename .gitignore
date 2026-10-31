@@ -3,5 +3,9 @@ library/
 __pycache__/
 .pytest_cache/
 *.pyc
-# third-party repos + a copyrighted PDF: never publish
-Extract test/
+# copyrighted book copies (PDFs + full-text XML): never publish
+Extract test/**/*.pdf
+Extract test/**/*.epub
+Extract test/**/The Nature of Right and Wrong_*.xml
+# browser debug logs
+*.log

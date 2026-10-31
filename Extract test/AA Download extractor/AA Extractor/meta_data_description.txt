@@ -1,0 +1,22 @@
+Here is what we want for meta data construction of policies.
+
+
+For natural language processing:
+
+We want policy entity detection
+We want problem entity detection
+We want policy experiment entity detection
+We want co-benefit entity detection
+We want negative side effect entity detection
+
+
+We want solution for relation between policy and problem
+
+
+
+
+
+
+
+
+
