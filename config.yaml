@@ -1,0 +1,7 @@
+specs_dir: specs
+out_dir: library
+contact_email: ""       # used for Unpaywall requests; or set ACQUIRE_EMAIL
+min_interval: 1.0       # seconds between requests to the same host
+timeout: 30
+retries: 3
+adapters: [arxiv, openlibrary, gutenberg, unpaywall]
