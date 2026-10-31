@@ -1,0 +1,89 @@
+
+
+The overall project, however, will be the following:
+
+We want to make something that creates a book xml file from a pdf.
+
+What we will do is extract the text from the pdf, and then find the title, publisher, publishing date, and author from the pdf.
+Then, we will find the chapters, chapter numbers, text (paragraphs and , citations, page numbers, chapter numbers, chapter title + page number,  book title + page number, bibliography, footnotes, endnotes).
+
+We want a system that separates all of these things. It's for academic type books. (like ones with citations).
+
+The main goal is we want to create a xml file that sorts out all the important entities, like actual text, citations, and the annoying things in books- like the name of the chapter and page number that appears on each page.
+Make a specific entity name for all of that.
+
+I want you to name all important entities and important entity relations we might consider, before starting on this project.
+
+We want to use entity detection and relation extraction for important parts of books:
+
+An example of some entities we are concerned with:
+
+title
+publisher
+publishing date
+author
+
+paragraphs
+sentences
+chapter-title
+page number
+citations, and each type (numbered. [32-35], [32], [32,33]. in text citation, etc. Ask chatgpt for all citations.
+chapter-page pair (title, page number)
+book-page pair (title, page number)
+
+quotations
+
+tables
+figures
+chart/graphs
+images
+
+And like I said, think of all possible examples for all entities, and their relations.
+
+
+Now, the goal is to generate a file, and name it using the
+book title (truncate to 50 char),
+the book author (or authors)(truncate to 50 char),
+the publication date year(truncate to 40 char),
+and publisher (truncate to 20 char)
+
+max filename length is 160 chars. Then save it.
+
+We want each citation in the book that is found in the text, to be linked to the citation in bibliography, or footnote, or endnote.
+Now, there are tricky issues here. I want you to list all possible issues we might face when dealing with this.
+One issue is that for numbered references, that are all in the endnotes, we can face something like 7 chapters, and each chapter uses numbers 1-10, or 1-20+.
+so we have the problem of matching each reference to 7 possible sources in the endnotes section.
+
+To figure that out, we can use our GLINER model for entity recognition and relation.
+
+For example, we can keep track of chapter name/page, as we scan the book, using a counter.
+
+We want to name all entities and relations through a linear scan of the pdf's text.
+
+So, we could go through all the text up to beginning of bibliography/endnotes, and for each citation, we attach citation type (number, in-text, etc, offhand, etc), and then
+attach any related meta-data of them, such as book-title, authors, publication year, website it was found on, chapter number that the citation appeared, chapter title that the citation
+
+We store those on a stack.
+Then, when we go through all the endnotes, we go through them, and match number-chapter to each one. The meta-data we collected will be a backup use case.
+
+=====================================================================
+
+So, to reiterate, I want you first to figure out all possible format issues we might have to deal with, in terms of bibliography, citation, and format structure.
+Then try and list all possible entities and entity relations that might concern us.
+Then, I want you to suggest a way of creating this program in linear-time complexity for us.
+
+=====================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
