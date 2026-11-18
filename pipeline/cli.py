@@ -12,6 +12,7 @@ from .metadata import enrich
 from .models import Candidate, Resolution, WorkSpec
 from .report import write
 from .spec import load_from
+from .progress import emit, failure_reason
 
 
 def _rank(spec: WorkSpec, candidates: list[Candidate]) -> list[Candidate]:
@@ -30,6 +31,7 @@ def run(cfg: Config, spec_paths: list[Path], only: set[str] | None = None,
 
     resolutions: list[Resolution] = []
     for spec in specs:
+        emit('finding', 'Looking up book details and available copies.', key=spec.key, title=spec.title, source='', fmt='', result=None)
         print(f"[{spec.key}] {spec.title}")
         hints: list[str] = []
         try:
@@ -41,17 +43,20 @@ def run(cfg: Config, spec_paths: list[Path], only: set[str] | None = None,
         failures: list[str] = []
         borrow_hints: list[str] = []
         for adapter in adapters:
+            emit('finding', 'Finding download links.', source=adapter.name)
             try:
                 found = adapter.lookup(client, spec)
                 candidates += found
                 print(f"  {adapter.name}: {len(found)} candidate(s)")
                 borrow_hints += list(getattr(adapter, "borrow_hints", []) or [])
             except Exception as exc:
-                failures.append(f"{adapter.name}: {exc}")
+                failures.append(f"{adapter.name}: {failure_reason(exc)}")
 
         ranked = _rank(spec, candidates)
         by_fmt: dict[str, list[Candidate]] = {}
         for cand in ranked:
+            if cand.fmt not in spec.formats:
+                continue
             by_fmt.setdefault(cand.fmt, []).append(cand)
 
         if not by_fmt:
@@ -60,35 +65,53 @@ def run(cfg: Config, spec_paths: list[Path], only: set[str] | None = None,
             resolutions.append(Resolution(spec, "not_found", detail=detail,
                                           hints=hints + borrow_hints, manual=manual))
             print("  -> not found in open sources (see wanted.md for manual links)")
+            emit('failed', detail, result='not_found', source='')
             continue
 
         if dry_run:
             for fmt, cands_in_fmt in by_fmt.items():
                 print(f"  -> would fetch {cands_in_fmt[0].source} {cands_in_fmt[0].url} ({fmt})")
             resolutions.append(Resolution(spec, "ok", detail="dry-run", hints=hints))
+            emit('complete', 'Dry run complete; no files were downloaded.', source='')
             continue
 
         res = Resolution(spec, "ok", hints=hints)
         sources: list[str] = []
         errors: list[str] = []
+        saved_formats = set()
         for fmt, cands_in_fmt in by_fmt.items():
             # README contract: per format, try ranked candidates in order until
             # one downloads and validates -- one flaky mirror can't sink a spec.
             for cand in cands_in_fmt:
+                emit('connecting', 'Connecting to the file source.', source=cand.source, fmt=fmt)
                 try:
-                    saved, sha = download(client, cand, spec, cfg.out_dir)
+                    if cand.source == 'annas_archive':
+                        from .annas_download import download_selected
+                        saved, sha = download_selected(cand, spec, cfg.out_dir, cfg)
+                    else:
+                        saved, sha = download(client, cand, spec, cfg.out_dir)
                     res.saved.append(saved)
                     sources.append(cand.source)
                     manifest.record(spec, cand, saved, sha)
+                    saved_formats.add(fmt)
+                    emit('saved', f'Saved {saved.name}', saved_as=saved.name)
                     print(f"  -> saved {saved.name} [{cand.source}, {cand.license or 'license n/a'}]")
                     break
                 except Exception as exc:
-                    errors.append(f"{fmt}<-{cand.source}: {exc}")
+                    reason = failure_reason(exc)
+                    errors.append(f"{fmt}<-{cand.source}: {reason}")
+                    emit('retrying', reason + ' Trying another candidate if available.')
                     print(f"  -> failed {fmt} from {cand.source}: {exc}")
         if not res.saved:
             res.status = "failed"
             res.manual = manual_links(spec)
-        res.detail = ", ".join(sources) or "; ".join(errors)
+        elif set(spec.formats) - saved_formats:
+            res.status = 'partial'
+        missing = set(spec.formats) - saved_formats
+        res.detail = '; '.join(filter(None, [', '.join(sources), '; '.join(errors),
+                               'Missing formats: ' + ', '.join(sorted(missing)) if missing else '']))
+        emit('failed' if not res.saved else 'partial' if missing else 'saved',
+             res.detail if missing else f'Saved {len(res.saved)} file(s).', result=res.status)
         resolutions.append(res)
 
     write(resolutions, cfg.out_dir)
@@ -98,8 +121,8 @@ def run(cfg: Config, spec_paths: list[Path], only: set[str] | None = None,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         "md-acquire",
-        description="MD-spec downloader for open-access books and papers. "
-                    "Non-open works get manual search links in wanted.md.",
+        description="MD-spec downloader for open-access books and papers and selected Anna files. "
+                    "Unresolved works get manual search links in wanted.md.",
     )
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--specs", action="append", default=[],

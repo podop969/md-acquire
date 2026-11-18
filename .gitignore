@@ -3,6 +3,8 @@ library/
 __pycache__/
 .pytest_cache/
 *.pyc
+# Local browser sessions may contain cookies; never commit them.
+.browser/
 # copyrighted book copies (PDFs + full-text XML): never publish
 Extract test/**/*.pdf
 Extract test/**/*.epub

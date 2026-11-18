@@ -7,8 +7,7 @@ from ..models import Candidate, WorkSpec
 
 
 class Adapter(ABC):
-    """Open-access source. lookup() returns download candidates; it must never
-    return links the pipeline is not allowed to fetch automatically."""
+    """Return source candidates, including explicit user-selected browser downloads."""
 
     name: str = "base"
 
