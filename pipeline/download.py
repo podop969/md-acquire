@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .http import Client
 from .models import Candidate, WorkSpec
+from .progress import emit
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {"CON", "PRN", "AUX", "NUL",
@@ -60,6 +61,8 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
     dest.mkdir(parents=True, exist_ok=True)
     final = dest / filename_for(spec, cand)
     if final.exists():
+        emit('validating', 'Checking the existing file before reusing it.')
+        validate(final, cand.fmt)
         digest = hashlib.sha256(final.read_bytes()).hexdigest()
         return final, digest
 
@@ -70,6 +73,10 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
         raise ValueError(f"server returned HTML, not {cand.fmt}")
 
     tmp = final.with_suffix(final.suffix + ".part")
+    length = r.headers.get('content-length', '')
+    total = int(length) if str(length).isdigit() and not r.headers.get('content-encoding') else None
+    received = 0
+    emit('downloading', 'Receiving file data.')
     digest = hashlib.sha256()
     try:
         with open(tmp, "wb") as fh:
@@ -77,6 +84,9 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
                 if chunk:
                     fh.write(chunk)
                     digest.update(chunk)
+                    received += len(chunk)
+                    emit('downloading', 'Receiving file data.', received=received, total=total)
+        emit('validating', 'Checking the downloaded file format.')
         if looks_like_html(tmp):
             raise ValueError("download body is HTML, not the document")
         validate(tmp, cand.fmt)

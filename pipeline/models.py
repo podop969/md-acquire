@@ -19,6 +19,9 @@ class WorkSpec:
     priority: str = "open_access"
     notes: str = ""
     source_path: Optional[Path] = None
+    source: str = ""
+    source_url: str = ""
+    source_format: str = ""
 
 
 @dataclass

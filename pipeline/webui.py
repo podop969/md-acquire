@@ -19,6 +19,7 @@ import html
 import json
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,12 @@ from urllib.parse import parse_qs, urlparse
 from .bulk import completed_formats
 from .config import Config
 from .spec import parse_file
+from .search import search, add_spec, CATALOGUE_SOURCES
+from .progress import listen, failure_reason
+from . import library
+import mimetypes
+import zipfile
+import xml.etree.ElementTree as ET
 
 _FILE_WHITELIST = ("report.md", "wanted.md", "wanted.html", "manifest.jsonl")
 
@@ -79,6 +86,16 @@ class Job:
         self.running = False
         self.kind = ""
         self.exit_code: int | None = None
+        self.progress: dict = {}
+        self.results: dict = {}
+        self.started_at = 0.0
+        self.finished_at = None
+
+    def update_progress(self, event):
+        with self.lock:
+            self.progress.update(event)
+            if event.get('result'):
+                self.results[self.progress.get('key', '')] = dict(self.progress)
 
     def start(self, kind: str, work: Callable[[], int]) -> bool:
         with self.lock:
@@ -87,25 +104,40 @@ class Job:
             echo = sys.stdout
             self.lines, self.exit_code, self.kind = [], None, kind
             self.running = True
+            self.started_at = time.monotonic()
+            self.finished_at = None
+            self.progress = {'stage': 'starting', 'message': 'Starting ' + kind + '…'}
+            self.results = {}
 
         def runner() -> None:
             try:
-                with contextlib.redirect_stdout(_Tee(self.lines, echo)):
+                with listen(self.update_progress), contextlib.redirect_stdout(_Tee(self.lines, echo)):
                     self.exit_code = int(work())
             except Exception as exc:
                 self.lines.append(f"\n!! crashed: {exc!r}\n")
                 self.exit_code = 2
-            self.running = False
+                self.update_progress({'stage': 'failed', 'message': failure_reason(exc)})
+            with self.lock:
+                if self.exit_code and self.progress.get('stage') not in ('failed', 'partial'):
+                    self.progress.update(stage='failed', message='Run finished with failures. See results and log below.')
+                elif not self.exit_code and self.progress.get('stage') not in ('saved', 'partial', 'failed'):
+                    self.progress.update(stage='complete', message='Run complete. See the log for details.')
+                self.finished_at = time.monotonic()
+                self.running = False
 
         threading.Thread(target=runner, daemon=True).start()
         return True
 
     def status(self) -> dict:
-        return {
+        with self.lock:
+            return {
             "running": self.running,
             "kind": self.kind,
             "exit_code": self.exit_code,
             "log": "".join(self.lines[-160:]),
+            "progress": dict(self.progress),
+            "results": [dict(r) for r in self.results.values()],
+            "elapsed": round((self.finished_at or time.monotonic()) - self.started_at, 1) if self.started_at else 0,
         }
 
 
@@ -119,7 +151,7 @@ def _bulk_work(cfg: Config, *, force: bool = False, dry_run: bool = False,
         resolutions = bulk.run(cfg, force=force, dry_run=dry_run, only=only)
         if dry_run:
             return 0                # informational: the printed plan is the product
-        failed = sum(1 for r in resolutions if r.status not in ("ok", "partial"))
+        failed = sum(1 for r in resolutions if r.status != "ok")
         return 0 if failed == 0 else 1
 
     return work
@@ -151,6 +183,8 @@ def spec_rows(cfg: Config) -> tuple[list[dict], list[dict]]:
                 "key": spec.key,
                 "title": spec.title,
                 "authors": ", ".join(spec.authors),
+                "selected_source": (f"Anna’s Archive · selected {spec.source_format.upper()} file"
+                                    if spec.source == 'annas_archive' else ''),
                 "formats": [{"fmt": f, "ok": f in got} for f in spec.formats],
                 "all_done": all(f in got for f in spec.formats),
             })
@@ -158,6 +192,15 @@ def spec_rows(cfg: Config) -> tuple[list[dict], list[dict]]:
 
 
 _CSS = """\
+.search-panel { margin-bottom: 1.5rem; }
+.search-form { display: flex; gap: .5rem; margin-top: .5rem; }
+.search-form input { min-width: 0; flex: 1; padding: .7rem; border: 1px solid #505164;
+  border-radius: 8px; background: #1d1e26; color: #e7e7ee; font: inherit; }
+#search-results { display: grid; gap: .5rem; max-height: 24rem; overflow: auto; }
+.search-result { display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: .8rem; background: #1d1e26; border-radius: 8px; }
+.search-result button { flex-shrink: 0; }
+#search-message { color: #a9a9c0; }
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 2rem 1rem 4rem; background: #14151a; color: #e7e7ee;
@@ -191,50 +234,198 @@ td form { margin: 0; }
 .files a { display: inline-block; margin: 0 .7rem .4rem 0; color: #9db4e8;
            font-size: .9rem; text-decoration: none; }
 .files a:hover { text-decoration: underline; }
+.download-status { border: 1px solid #666680; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+.download-status[data-stage='failed'], .download-status[data-stage='partial'] { border-color: #d99672; }
+.download-status progress { width: 100%; }
 footer { color: #70708a; font-size: .82rem; margin-top: 2rem; }
 """
 
 _JS = """\
 const logEl = document.getElementById('log');
-const buttons = [...document.querySelectorAll('button')];
+const buttons = [...document.querySelectorAll('[data-run]')];
 let polling = false;
 function setBusy(b) { buttons.forEach(x => x.disabled = b); }
+function renderProgress(job) {
+  const p = job.progress || {};
+  const card = document.getElementById('download-status');
+  card.hidden = !p.stage; card.dataset.stage = p.stage || '';
+  const labels = {starting: 'Starting', finding: 'Finding files', connecting: 'Connecting',
+    waiting: 'Waiting for browser or verification', downloading: 'Downloading',
+    validating: 'Checking file', retrying: 'Trying another source', saved: 'Saved',
+    failed: 'Failed', partial: 'Some formats missing', complete: 'Complete'};
+  document.getElementById('download-stage').textContent = labels[p.stage] || '';
+  document.getElementById('download-detail').textContent = p.message || '';
+  document.getElementById('download-context').textContent =
+    [p.title, p.source, (p.fmt || '').toUpperCase(), Math.floor(job.elapsed || 0) + 's elapsed'].filter(Boolean).join(' · ');
+  const meter = document.getElementById('download-meter');
+  meter.hidden = p.stage !== 'downloading';
+  if (p.total > 0 && p.received != null) { meter.max = p.total; meter.value = p.received; }
+  else { meter.removeAttribute('value'); }
+  document.getElementById('download-bytes').textContent = p.received == null ? '' :
+    (p.received / 1048576).toFixed(2) + ' MB received' +
+    (p.total ? ' of ' + (p.total / 1048576).toFixed(2) + ' MB' : '');
+  const results = document.getElementById('download-results'); results.replaceChildren();
+  for (const r of job.results || []) {
+    const item = document.createElement('li');
+    item.textContent = r.title + ': ' + r.message; results.append(item);
+  }
+}
 async function run(url) { await fetch(url); poll(); }
 async function poll() {
   if (polling) return;
   polling = true; setBusy(true);
-  while (true) {
+  try { while (true) {
     const j = await (await fetch('/status')).json();
+    renderProgress(j);
     logEl.textContent = j.log || (j.running ? 'working...' : '');
     logEl.scrollTop = logEl.scrollHeight;
     if (!j.running) break;
     await new Promise(r => setTimeout(r, 700));
   }
-  polling = false; setBusy(false);
   setTimeout(() => location.reload(), 800);
+  } catch (error) {
+    logEl.textContent += '\\nLost connection to the dashboard. Reload to reconnect.';
+  } finally { polling = false; setBusy(false); }
+}
+async function refreshSpecs() {
+  const response = await fetch('/');
+  if (!response.ok) throw new Error('Could not refresh the table. Reload this page.');
+  const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+  document.querySelector('table').replaceWith(doc.querySelector('table'));
+  document.querySelector('.count').replaceWith(doc.querySelector('.count'));
+  document.querySelectorAll('table [data-run]').forEach(b => {
+    buttons.push(b);
+    b.addEventListener('click', () => run(b.dataset.run));
+  });
+}
+function appendSearchResults(books, results, message) {
+    for (const book of books) {
+      const row = document.createElement('div'); row.className = 'search-result';
+      const info = document.createElement('div');
+      const title = document.createElement('strong'); title.textContent = book.title;
+      const detail = document.createElement('div'); detail.className = 'auth';
+      detail.textContent = [book.authors.join(', '), book.year,
+        book.source === 'annas_archive' ? "Anna's Archive" : book.source,
+        book.listed_format ? 'Listed format: ' + book.listed_format.toUpperCase() : '',
+        book.availability].filter(Boolean).join(' · ');
+      info.append(title, detail);
+      if (book.source_url) {
+        const url = new URL(book.source_url, window.location.origin);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          const link = document.createElement('a'); link.href = url.href;
+          link.textContent = 'View source page'; link.target = '_blank'; link.rel = 'noopener noreferrer';
+          info.append(link);
+        }
+      }
+      const add = document.createElement('button'); add.textContent = 'Add to specs';
+      if (book.source === 'annas_archive' && !['pdf', 'epub'].includes(book.listed_format)) {
+        add.disabled = true; add.textContent = 'PDF/EPUB only';
+        add.title = 'Choose a PDF or EPUB record to download through this app.';
+      }
+      add.setAttribute('aria-label', 'Add ' + book.title + ' to specs');
+      add.addEventListener('click', async () => {
+        add.disabled = true; add.textContent = 'Adding…';
+        try {
+          const response = await fetch('/specs', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify(book)});
+          const saved = await response.json();
+          if (!response.ok) throw new Error(saved.error || 'Could not add this title.');
+          await refreshSpecs();
+          add.textContent = saved.created ? 'Added ✓' : 'Already added';
+          message.textContent = book.title + (book.source === 'annas_archive'
+            ? ' is in your specs table. Click Fetch to download this selected copy through the browser.'
+            : ' is in your specs table. Click Fetch to look for an open-access copy.');
+        } catch (error) {
+          message.textContent = error.message; add.disabled = false; add.textContent = 'Retry adding';
+        }
+      });
+      row.append(info, add); results.append(row);
+    }
+}
+async function searchBooks(event) {
+  event.preventDefault();
+  const message = document.getElementById('search-message');
+  const annaMessage = document.getElementById('annas-search-message');
+  const results = document.getElementById('search-results');
+  const submit = document.getElementById('search-submit');
+  if (submit.disabled) return;
+  const query = document.getElementById('search-query').value;
+  const useAnna = document.getElementById('search-form').dataset.annasEnabled === 'true';
+  submit.disabled = true; results.replaceChildren();
+  annaMessage.textContent = useAnna ? 'Searching Anna’s Archive… Complete verification if a browser window opens. You can use other results while it loads.' : '';
+  let count = 0;
+  let pending = useAnna ? 2 : 1;
+  const warnings = [];
+  const updateSummary = () => {
+    message.textContent = (count ? count + ' results. Add a title to your specs below.' :
+      pending ? 'Searching catalogues…' : 'No matches found. Try another title or author.') + ' ' + warnings.join(' ');
+  };
+  updateSummary();
+  async function loadSource(url, options, isAnna) {
+    try {
+      const response = await fetch(url, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Search failed. Please try again.');
+      appendSearchResults(data.results, results, message);
+      count += data.results.length;
+      if (isAnna) {
+        annaMessage.textContent = data.warnings.length ? data.warnings.join(' ') :
+          'Anna’s Archive: ' + data.results.length + ' results.';
+      } else {
+        warnings.push(...data.warnings);
+      }
+    } catch (error) {
+      if (isAnna) annaMessage.textContent = 'Anna’s Archive: ' + error.message;
+      else warnings.push(error.message);
+    } finally {
+      pending -= 1; updateSummary();
+    }
+  }
+  const tasks = [loadSource('/search?q=' + encodeURIComponent(query), undefined, false)];
+  if (useAnna) tasks.push(loadSource('/search/annas', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({q: query})
+  }, true));
+  try { await Promise.all(tasks); }
+  finally { submit.disabled = false; }
 }
 window.addEventListener('DOMContentLoaded', async () => {
+  document.getElementById('search-form').addEventListener('submit', searchBooks);
   document.querySelectorAll('[data-run]').forEach(b =>
     b.addEventListener('click', () => run(b.dataset.run)));
   const j = await (await fetch('/status')).json();
   if (j.log) logEl.textContent = j.log;
+  renderProgress(j);
   if (j.running) poll();
 });
 """
 
 
-def dashboard_html(rows: list[dict], problems: list[dict], status: dict) -> str:
+def dashboard_html(rows: list[dict], problems: list[dict], status: dict, *, anna_enabled: bool = False) -> str:
     out = ["<!doctype html><html lang='en'><head><meta charset='utf-8'>",
            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
            "<title>md-acquire — trigger UI</title>",
            "<style>", _CSS, "</style></head><body><main>",
            "<h1>md-acquire <span>— trigger UI</span></h1>",
+           "<p><a href='/library'>My library — read downloaded books</a></p>",
+           "<section class='search-panel' aria-label='Catalogue search'>",
+           f"<form id='search-form' data-annas-enabled='{str(anna_enabled).lower()}'><label for='search-query'>Find books and papers</label>",
+           "<div class='search-form'><input id='search-query' type='search' required minlength='2' maxlength='300' "
+           "placeholder='Search by title, author, or ISBN'><button id='search-submit' type='submit'>Search</button></div></form>",
+           "<p class='auth'>Searches enabled Open Library, Gutenberg, arXiv, and Anna’s Archive sources. "
+           "Anna’s Archive PDF/EPUB selections keep their exact file link for browser downloads. "
+           "Unpaywall checks DOI-based open copies when you fetch. Adding a title does not download it.</p>",
+           "<p id='search-message' role='status' aria-live='polite'></p>",
+           "<p id='annas-search-message' class='auth' role='status' aria-live='polite'></p><div id='search-results'></div></section>",
            "<div class='bar'>",
            "<button data-run=\"/run?mode=dry\">Dry run all</button>",
            "<button class='go' data-run=\"/run?mode=run\">Run all (resume)</button>",
            "<button class='warn' data-run=\"/run?mode=force\">Force re-fetch all</button>",
            "<button data-run=\"/test\">Run test suite</button>",
            "</div>",
+           "<section id='download-status' class='download-status' hidden role='status' aria-live='polite'>"
+           "<strong id='download-stage'></strong><p id='download-context' class='auth'></p>"
+           "<p id='download-detail'></p><progress id='download-meter' aria-label='Download progress' hidden></progress>"
+           "<p id='download-bytes'></p><ul id='download-results'></ul></section>",
            f"<pre id='log'>{html.escape(status.get('log') or '')}</pre>"]
     if status.get("running"):
         out.append(f"<div class='note'>a {html.escape(status.get('kind') or 'job')} is in "
@@ -248,6 +439,8 @@ def dashboard_html(rows: list[dict], problems: list[dict], status: dict) -> str:
     out.append("<table><tr><th>title</th><th>formats</th><th></th></tr>")
     for r in rows:
         auth_html = f"<div class='auth'>{html.escape(r['authors'])}</div>" if r["authors"] else ""
+        if r.get('selected_source'):
+            auth_html += f"<div class='auth'>{html.escape(r['selected_source'])}</div>"
         fmt_html = " &middot; ".join(
             f"<span class='{'ok' if f['ok'] else 'pend'}'>"
             f"{'&#10003; ' if f['ok'] else '&#10007; '}{html.escape(f['fmt'])}"
@@ -269,9 +462,9 @@ def dashboard_html(rows: list[dict], problems: list[dict], status: dict) -> str:
                "<a href='/file?name=wanted.html' target='_blank'>wanted.html (clickable)</a>"
                "<a href='/file?name=manifest.jsonl' target='_blank'>manifest.jsonl</a>"
                "</div>")
-    out.append("<footer>Open-access sources only (arXiv, Open Library public scans, "
-               "Project Gutenberg, Unpaywall). Non-open titles are never auto-fetched: "
-               "wanted.html hands you search links to click yourself.</footer>")
+    out.append("<footer>Fetch checks the configured open-access sources and any explicitly selected "
+               "Anna’s Archive file. Anna downloads may need browser interaction. "
+               "Unresolved titles get manual links in wanted.html.</footer>")
     out.append("<script>" + _JS + "</script>")
     out.append("</main></body></html>")
     return "".join(out)
@@ -298,14 +491,116 @@ def make_handler(config_path: str, job: Job | None = None):
             self._send(code, json.dumps(payload).encode("utf-8"),
                        "application/json; charset=utf-8")
 
+        def _local_file(self, path: Path, ctype: str) -> None:
+            with path.open('rb') as stream:
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(path.stat().st_size))
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                while chunk := stream.read(64 * 1024):
+                    self.wfile.write(chunk)
+
+        def do_POST(self) -> None:
+            if self.path not in ('/specs', '/search/annas', '/library/position', '/library/reveal'):
+                self._json({'error': 'Unknown route'}, 404)
+                return
+            # JSON-only requests prevent foreign HTML forms from writing specs or opening a browser.
+            if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                self._json({'error': 'Expected JSON'}, 415)
+                return
+            origin = self.headers.get('Origin')
+            if origin and origin != 'http://' + self.headers.get('Host', ''):
+                self._json({'error': 'Cross-origin request rejected'}, 403)
+                return
+            try:
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 65536:
+                    raise ValueError('Invalid request size.')
+                payload = json.loads(self.rfile.read(size))
+                cfg = Config.load(config_path)
+                if self.path in ('/library/position', '/library/reveal'):
+                    if not isinstance(payload, dict) or not isinstance(payload.get('id'), str):
+                        raise ValueError('Invalid library request.')
+                    if self.path == '/library/position':
+                        library.save_position(cfg.out_dir, payload['id'], payload.get('position'))
+                    else:
+                        library.reveal(cfg.out_dir, payload['id'])
+                    self._json({'ok': True})
+                    return
+                if self.path == '/search/annas':
+                    query = payload.get('q') if isinstance(payload, dict) else None
+                    if not isinstance(query, str):
+                        raise ValueError('Enter a search query.')
+                    self._json(search(query, cfg, sources=('annas_archive',)))
+                    return
+                key, created = add_spec(payload, cfg.specs_dir)
+                self._json({'key': key, 'created': created}, 201 if created else 200)
+            except (ValueError, UnicodeDecodeError) as exc:
+                self._json({'error': str(exc)}, 400)
+            except BrokenPipeError:
+                pass
+            except FileNotFoundError as exc:
+                self._json({'error': str(exc)}, 404)
+            except OSError:
+                self._json({'error': 'Could not save the spec. Check folder permissions.'}, 500)
+
         def do_GET(self) -> None:
             u = urlparse(self.path)
             try:
-                if u.path == "/":
+                if u.path.startswith('/assets/'):
+                    path = (library.STATIC / u.path.removeprefix('/assets/')).resolve()
+                    if not path.is_relative_to(library.STATIC.resolve()) or not path.is_file():
+                        raise FileNotFoundError('Asset not found.')
+                    self._local_file(path, mimetypes.guess_type(path)[0] or 'application/octet-stream')
+                elif u.path in ('/library', '/reader'):
+                    page = library.library_page() if u.path == '/library' else library.reader_page()
+                    self._send(200, page.encode(), 'text/html; charset=utf-8')
+                elif u.path.startswith('/library/'):
+                    root = Config.load(config_path).out_dir
+                    q = parse_qs(u.query)
+                    if u.path == '/library/books':
+                        self._json({'books': library.books(root), 'positions': library.positions(root)})
+                        return
+                    identifier = (q.get('id') or [''])[0]
+                    row, path = library.book(root, identifier)
+                    if u.path == '/library/book':
+                        row['position'] = library.positions(root).get(identifier)
+                        if row['format'] == 'epub':
+                            row['chapters'] = len(library.Epub(path).chapters)
+                        self._json(row)
+                    elif u.path == '/library/content':
+                        self._local_file(path, 'application/pdf' if row['format'] == 'pdf' else 'application/epub+zip')
+                    elif u.path in ('/library/cover', '/library/image', '/library/chapter') and row['format'] == 'epub':
+                        epub = library.Epub(path)
+                        if u.path == '/library/chapter':
+                            body = epub.chapter(int((q.get('index') or ['0'])[0]), identifier).encode()
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/html; charset=utf-8')
+                            self.send_header('Content-Length', str(len(body)))
+                            self.send_header('Content-Security-Policy', "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'; sandbox allow-same-origin")
+                            self.end_headers()
+                            self.wfile.write(body)
+                        else:
+                            name = epub.cover if u.path == '/library/cover' else (q.get('name') or [''])[0]
+                            if not name:
+                                raise FileNotFoundError('No embedded cover.')
+                            data, ctype = epub.image(name)
+                            self._send(200, data, ctype)
+                    else:
+                        raise FileNotFoundError('Library route not found.')
+                elif u.path == "/":
                     cfg = Config.load(config_path)
                     rows, problems = spec_rows(cfg)
-                    self._send(200, dashboard_html(rows, problems, _job.status()).encode("utf-8"),
+                    self._send(200, dashboard_html(rows, problems, _job.status(),
+                               anna_enabled='annas_archive' in cfg.adapters).encode("utf-8"),
                                "text/html; charset=utf-8")
+                elif u.path == '/search':
+                    query = (parse_qs(u.query).get('q') or [''])[0]
+                    try:
+                        self._json(search(query, Config.load(config_path), sources=CATALOGUE_SOURCES))
+                    except ValueError as exc:
+                        self._json({'error': str(exc)}, 400)
                 elif u.path == "/status":
                     self._json(_job.status())
                 elif u.path == "/run":
@@ -338,6 +633,12 @@ def make_handler(config_path: str, job: Job | None = None):
                     self._json({"ok": False, "error": "unknown route"}, 404)
             except BrokenPipeError:
                 pass
+            except FileNotFoundError as exc:
+                self._json({'error': str(exc)}, 404)
+            except (ValueError, KeyError) as exc:
+                self._json({'error': str(exc)}, 400)
+            except (zipfile.BadZipFile, ET.ParseError):
+                self._json({'error': 'This EPUB is damaged or has an unsupported package structure. Try the original file in another reader.'}, 400)
             except Exception as exc:
                 try:
                     self._json({"ok": False, "error": repr(exc)}, 500)
