@@ -24,15 +24,14 @@ The optional browser integration check is `python tests/browser_library_smoke.py
 ## Layout
 
     md-acquire/
-    ├─ config.yaml            # adapters, output dir, throttle, email (Unpaywall)
+    ├─ config.yaml            # adapters, output dir, throttle, email (Unpaywall), annas_archive_*
     ├─ requirements.txt
     ├─ specs/                 # your MD specs (YAML frontmatter per file)
-    │  ├─ attention-is-all-you-need.md
-    │  ├─ pride-and-prejudice.md
-    │  └─ thinking-fast-and-slow.md
     ├─ pipeline/…             # models, config, http, spec, metadata, handoff,
-    │  …                      # download, manifest, report, cli, bulk, adapters/
-    ├─ scripts/               # setup.ps1 / dev.ps1 / run.ps1 / schedule.ps1
+    │  …                      # download, manifest, report, cli, bulk, adapters/,
+    │  …                      # search, progress, library, annas_*, webui, static/
+    ├─ scripts/               # setup.ps1 / dev.ps1 / run.ps1 / ui.ps1 / schedule.ps1
+    ├─ docs/MAP.md            # full map: tree, routes, flow, contracts, tests
     ├─ .github/workflows/     # windows CI (pytest matrix + CLI smoke)
     └─ tests/                 # offline suite (FakeClient seam, no network)
 
@@ -66,7 +65,10 @@ CLI equivalents (what the UI buttons call):
     python -m pipeline.bulk --only pride-and-prejudice
     python -m pipeline.cli --specs specs\more\       # point at other MD files
 
-Docs: `docs\MAP.md` — full map of the tree, flow, contracts, test coverage.
+`bulk` exits 0 when every spec resolves and 1 when any stays unresolved, dry
+runs included: a book with no open copy anywhere is a normal exit-1 outcome.
+
+Docs: `docs\MAP.md` — full map of the tree, routes, flow, contracts, test coverage.
 
 Outputs in `library/`:
 - the files themselves, named `Title - Author.epub/.pdf`
@@ -74,6 +76,17 @@ Outputs in `library/`:
 - `report.md` — what resolved, per source/format/year/license
 - `wanted.md` — unresolved specs with pre-built search links for manual fetching
   (and Open Library borrow hints when a copy is borrowable but not public)
+
+## Local web UI security
+
+The UI listens on 127.0.0.1 only, but a loopback address alone does not stop a
+web page open in your own browser from sending it requests (cross-site requests
+or DNS rebinding). So every request must carry a loopback `Host` header, and
+every action that changes something (runs, tests, adding specs, Anna's search,
+saving reading positions, revealing a file) is a POST that must carry the
+per-process token the dashboard, library and reader pages embed. The token
+changes each time the UI starts. A POST without it gets 403. Details and the
+route list: `docs/MAP.md` § 1.
 
 ## Anna's Archive search and selected-file downloads
 
@@ -163,6 +176,10 @@ are not bypassed. Unresolved specs receive manual links in the wanted list.
 ## Download status
 
 The dashboard displays the current book, source, elapsed time, and download stage above the log. It shows received bytes for streamed downloads and a progress bar when the server supplies a usable file size. Browser transfers show their stage without an estimated percentage.
+
+If a file with the target name already exists but fails validation (for
+example a truncated earlier download), it is moved aside to `<name>.invalid`,
+kept for inspection, and a fresh copy is fetched.
 
 For Anna’s Archive, the status card indicates when you may need to complete browser verification. Transfers continue automatically when a supported download link becomes available. Files are checked before being reported as saved. Missing requested formats are reported as partial downloads; authorization, connection, and certificate failures have readable explanations. Completed results remain visible across page reloads until another job starts or the server restarts.
 
