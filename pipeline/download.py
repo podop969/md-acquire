@@ -62,9 +62,17 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
     final = dest / filename_for(spec, cand)
     if final.exists():
         emit('validating', 'Checking the existing file before reusing it.')
-        validate(final, cand.fmt)
-        digest = hashlib.sha256(final.read_bytes()).hexdigest()
-        return final, digest
+        try:
+            validate(final, cand.fmt)
+        except ValueError:
+            if cand.fmt not in ("pdf", "epub"):
+                raise  # the format is unsupported, not the file: leave it alone
+            # Every candidate for this spec targets this same name, so an invalid file
+            # here would fail them all. Keep it aside for inspection; fetch a fresh copy.
+            final.replace(final.with_name(final.name + ".invalid"))
+        else:
+            digest = hashlib.sha256(final.read_bytes()).hexdigest()
+            return final, digest
 
     r = client.get(cand.url, stream=True, allow_redirects=True)
     r.raise_for_status()
