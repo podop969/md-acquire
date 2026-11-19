@@ -1,4 +1,5 @@
 const message = document.querySelector('#message');
+const TOKEN = document.querySelector('meta[name="ui-token"]').content;
 let books = [], positions = {};
 let thumbnailQueue = Promise.resolve(), pdfLibrary;
 const thumbnails = new IntersectionObserver(entries => {
@@ -49,7 +50,7 @@ function render() {
     const folder = document.createElement('button'); folder.textContent = 'Show in folder';
     folder.onclick = async () => {
       try {
-        const r = await fetch('/library/reveal', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:book.id})});
+        const r = await fetch('/library/reveal', {method:'POST', headers:{'Content-Type':'application/json', 'X-UI-Token':TOKEN}, body:JSON.stringify({id:book.id})});
         if (!r.ok) throw new Error((await r.json()).error);
         message.textContent = 'Opened the book’s folder.';
       } catch (e) { message.textContent = e.message; }

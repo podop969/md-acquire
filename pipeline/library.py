@@ -177,21 +177,23 @@ class Epub:
                 '<style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:20px/1.7 Georgia,serif;color:#24232a;background:#fffaf0;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}table{max-width:100%}</style>' + str(body))
 
 
-def page(title: str, body: str, script: str) -> str:
+def page(title: str, body: str, script: str, token: str = '') -> str:
+    # The UI token authorises this page's POSTs (see webui.make_handler).
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<meta name="ui-token" content="{html.escape(token, quote=True)}">'
             f'<title>{html.escape(title)}</title><link rel="stylesheet" href="/assets/library.css"></head>'
             '<body><header><a href="/">Search & downloads</a><a href="/library">My library</a></header>'
             f'<main>{body}</main><script type="module" src="/assets/{script}"></script></body></html>')
 
 
-def library_page():
+def library_page(token: str = ''):
     return page('My library', '<h1>My library</h1><p>Your downloaded books, ready to read.</p>'
                 '<label>Find in library <input id="filter" type="search" placeholder="Title or author"></label>'
-                '<p id="message" role="status">Loading books…</p><div id="books" class="grid"></div>', 'library.js')
+                '<p id="message" role="status">Loading books…</p><div id="books" class="grid"></div>', 'library.js', token)
 
 
-def reader_page():
+def reader_page(token: str = ''):
     return page('Reader', '<h1 id="title">Reader</h1><div class="controls">'
                 '<button id="prev" disabled>Previous</button><label id="location-label">Page / chapter '
                 '<input id="location" type="number" min="1" value="1"></label><span id="total"></span>'
@@ -199,4 +201,4 @@ def reader_page():
                 '<option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option></select></label>'
                 '<a id="original">Open original file</a></div><p id="message" role="status">Loading…</p>'
                 '<div id="viewport"><canvas id="pdf" hidden aria-label="PDF page"></canvas>'
-                '<iframe id="epub" title="Book chapter" sandbox="allow-same-origin" hidden></iframe></div>', 'reader.js')
+                '<iframe id="epub" title="Book chapter" sandbox="allow-same-origin" hidden></iframe></div>', 'reader.js', token)
