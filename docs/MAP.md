@@ -220,10 +220,12 @@ Run them: `.\scripts\ui.ps1 → Run test suite`, or `.venv\Scripts\python.exe -m
 
 ## 7. Verified state (as of 2026-11-19)
 
-- CI on `main` at `9422e1b` (PR #1 merged): green on Python 3.10, 3.11 and
-  3.12, both the test step (212 passed) and the CLI smoke. This is the first
-  green `main` since 31 Oct, when the CLI smoke began failing on the pending
-  in-copyright spec.
+- CI on `main` at `1147b25` (PR #1 and docs PR #2 merged, run 44589293598):
+  green on Python 3.10, 3.11 and 3.12, both the test step (212 passed) and
+  the CLI smoke. PR #1's merge (`e9e922c`) was the first green `main` since
+  31 Oct, when the CLI smoke began failing on the pending in-copyright spec.
+- The history was rewritten on 19 Nov, so commit IDs from before then
+  changed.
 - Local, 19 Nov: the suite minus the Anna's Archive tests, 166 passed on 3.12
   and 3.10; `tests/browser_library_smoke.py` passed in headless Chrome; on the
   dashboard, **Dry run all** clicked in headless Chrome sent `POST /run` (200) and the job
