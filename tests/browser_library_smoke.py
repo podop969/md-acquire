@@ -1,5 +1,5 @@
 """Optional browser integration check: python tests/browser_library_smoke.py. Uses temporary files and installed Chrome."""
-import base64, json, sys, tempfile, threading, zipfile
+import base64, json, socket, sys, tempfile, threading, zipfile
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -24,7 +24,10 @@ with tempfile.TemporaryDirectory() as d:
         z.writestr('book.opf','<package><manifest><item id="a" href="a.xhtml"/><item id="b" href="b.xhtml"/><item id="cover" href="cover.png" properties="cover-image"/></manifest><spine><itemref idref="a"/><itemref idref="b"/></spine></package>')
         for name in ('a','b'): z.writestr(name+'.xhtml','<html><body><h1>Chapter '+name+'</h1>'+('<p>Reading text</p>'*100)+'<script>parent.document.title="ATTACK"</script></body></html>')
         z.writestr('cover.png',base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII='))
-    server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(str(root/'config.yaml'),Job()))
+    # The UI guard only accepts its own loopback Host:port, so bind a known port first.
+    with socket.socket() as s:
+        s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
+    server=ThreadingHTTPServer(('127.0.0.1',port),make_handler(str(root/'config.yaml'),Job(),port=port))
     threading.Thread(target=server.serve_forever,daemon=True).start()
     origin=f'http://127.0.0.1:{server.server_port}'
     try:

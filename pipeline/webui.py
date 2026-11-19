@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import html
 import json
+import secrets
 import sys
 import threading
 import time
@@ -270,7 +272,11 @@ function renderProgress(job) {
     item.textContent = r.title + ': ' + r.message; results.append(item);
   }
 }
-async function run(url) { await fetch(url); poll(); }
+const TOKEN = document.querySelector('meta[name="ui-token"]').content;
+async function run(url) {
+  await fetch(url, { method: 'POST', headers: { 'X-UI-Token': TOKEN } });
+  poll();
+}
 async function poll() {
   if (polling) return;
   polling = true; setBusy(true);
@@ -327,7 +333,7 @@ function appendSearchResults(books, results, message) {
         add.disabled = true; add.textContent = 'Adding…';
         try {
           const response = await fetch('/specs', {method: 'POST',
-            headers: {'Content-Type': 'application/json'}, body: JSON.stringify(book)});
+            headers: {'Content-Type': 'application/json', 'X-UI-Token': TOKEN}, body: JSON.stringify(book)});
           const saved = await response.json();
           if (!response.ok) throw new Error(saved.error || 'Could not add this title.');
           await refreshSpecs();
@@ -383,7 +389,7 @@ async function searchBooks(event) {
   }
   const tasks = [loadSource('/search?q=' + encodeURIComponent(query), undefined, false)];
   if (useAnna) tasks.push(loadSource('/search/annas', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({q: query})
+    method: 'POST', headers: {'Content-Type': 'application/json', 'X-UI-Token': TOKEN}, body: JSON.stringify({q: query})
   }, true));
   try { await Promise.all(tasks); }
   finally { submit.disabled = false; }
@@ -400,9 +406,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 """
 
 
-def dashboard_html(rows: list[dict], problems: list[dict], status: dict, *, anna_enabled: bool = False) -> str:
+def dashboard_html(rows: list[dict], problems: list[dict], status: dict,
+                   token: str = "", *, anna_enabled: bool = False) -> str:
     out = ["<!doctype html><html lang='en'><head><meta charset='utf-8'>",
            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+           f"<meta name='ui-token' content='{html.escape(token, quote=True)}'>",
            "<title>md-acquire — trigger UI</title>",
            "<style>", _CSS, "</style></head><body><main>",
            "<h1>md-acquire <span>— trigger UI</span></h1>",
@@ -470,14 +478,72 @@ def dashboard_html(rows: list[dict], problems: list[dict], status: dict, *, anna
     return "".join(out)
 
 
-def make_handler(config_path: str, job: Job | None = None):
+def make_handler(config_path: str, job: Job | None = None, *,
+                 port: int = 8619, token: str | None = None):
+    """Build the request handler.
+
+    CSRF / DNS-rebinding guard: every request must carry a loopback Host header,
+    and every state-changing route is POST-only and needs the per-process token
+    (embedded in the dashboard, library and reader pages) in an X-UI-Token header.
+    A cross-site page can neither read that token nor set a custom header.
+    The guard runs in do_POST before any routing, so a POST route added later
+    is covered without further changes; never add a second do_POST.
+    """
     _job = job or _SHARED_JOB
+    _token = token or secrets.token_urlsafe(32)
+    _allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    _json_routes = ('/specs', '/search/annas', '/library/position', '/library/reveal')
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "md-acquire-ui/0.1"
 
         def log_message(self, fmt, *args) -> None:   # keep the console clean
             pass
+
+        def _host_ok(self) -> bool:
+            if self.headers.get("Host", "") in _allowed_hosts:
+                return True
+            self._json({"ok": False, "error": "bad host"}, 403)
+            return False
+
+        def do_POST(self) -> None:
+            if not self._host_ok():
+                return
+            sent = self.headers.get("X-UI-Token", "")
+            if not hmac.compare_digest(sent.encode(), _token.encode()):
+                self._json({"ok": False, "error": "bad or missing token"}, 403)
+                return
+            if urlparse(self.path).path in ("/run", "/test"):
+                self._post_job()
+            elif self.path in _json_routes:
+                self._post_json()
+            else:
+                self._json({"ok": False, "error": "unknown route"}, 404)
+
+        def _post_job(self) -> None:
+            u = urlparse(self.path)
+            try:
+                if u.path == "/run":
+                    cfg = Config.load(config_path)
+                    q = parse_qs(u.query)
+                    mode = (q.get("mode") or ["run"])[0]
+                    key = (q.get("spec") or [None])[0]
+                    started = _job.start(
+                        "bulk run",
+                        _bulk_work(cfg, force=mode == "force", dry_run=mode == "dry",
+                                   only={key} if key else None),
+                    )
+                    self._json({"ok": True, "started": started, "busy": not started})
+                else:
+                    started = _job.start("test suite", _pytest_work())
+                    self._json({"ok": True, "started": started, "busy": not started})
+            except BrokenPipeError:
+                pass
+            except Exception as exc:
+                try:
+                    self._json({"ok": False, "error": repr(exc)}, 500)
+                except Exception:
+                    pass
 
         def _send(self, code: int, body: bytes, ctype: str) -> None:
             self.send_response(code)
@@ -501,11 +567,8 @@ def make_handler(config_path: str, job: Job | None = None):
                 while chunk := stream.read(64 * 1024):
                     self.wfile.write(chunk)
 
-        def do_POST(self) -> None:
-            if self.path not in ('/specs', '/search/annas', '/library/position', '/library/reveal'):
-                self._json({'error': 'Unknown route'}, 404)
-                return
-            # JSON-only requests prevent foreign HTML forms from writing specs or opening a browser.
+        def _post_json(self) -> None:
+            # Second layer behind the token: JSON-only and same-origin requests.
             if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                 self._json({'error': 'Expected JSON'}, 415)
                 return
@@ -546,6 +609,8 @@ def make_handler(config_path: str, job: Job | None = None):
                 self._json({'error': 'Could not save the spec. Check folder permissions.'}, 500)
 
         def do_GET(self) -> None:
+            if not self._host_ok():
+                return
             u = urlparse(self.path)
             try:
                 if u.path.startswith('/assets/'):
@@ -554,7 +619,8 @@ def make_handler(config_path: str, job: Job | None = None):
                         raise FileNotFoundError('Asset not found.')
                     self._local_file(path, mimetypes.guess_type(path)[0] or 'application/octet-stream')
                 elif u.path in ('/library', '/reader'):
-                    page = library.library_page() if u.path == '/library' else library.reader_page()
+                    page = (library.library_page(_token) if u.path == '/library'
+                            else library.reader_page(_token))
                     self._send(200, page.encode(), 'text/html; charset=utf-8')
                 elif u.path.startswith('/library/'):
                     root = Config.load(config_path).out_dir
@@ -592,9 +658,9 @@ def make_handler(config_path: str, job: Job | None = None):
                 elif u.path == "/":
                     cfg = Config.load(config_path)
                     rows, problems = spec_rows(cfg)
-                    self._send(200, dashboard_html(rows, problems, _job.status(),
-                               anna_enabled='annas_archive' in cfg.adapters).encode("utf-8"),
-                               "text/html; charset=utf-8")
+                    page = dashboard_html(rows, problems, _job.status(), _token,
+                                          anna_enabled='annas_archive' in cfg.adapters)
+                    self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                 elif u.path == '/search':
                     query = (parse_qs(u.query).get('q') or [''])[0]
                     try:
@@ -603,20 +669,8 @@ def make_handler(config_path: str, job: Job | None = None):
                         self._json({'error': str(exc)}, 400)
                 elif u.path == "/status":
                     self._json(_job.status())
-                elif u.path == "/run":
-                    cfg = Config.load(config_path)
-                    q = parse_qs(u.query)
-                    mode = (q.get("mode") or ["run"])[0]
-                    key = (q.get("spec") or [None])[0]
-                    started = _job.start(
-                        "bulk run",
-                        _bulk_work(cfg, force=mode == "force", dry_run=mode == "dry",
-                                   only={key} if key else None),
-                    )
-                    self._json({"ok": True, "started": started, "busy": not started})
-                elif u.path == "/test":
-                    started = _job.start("test suite", _pytest_work())
-                    self._json({"ok": True, "started": started, "busy": not started})
+                elif u.path in ("/run", "/test"):
+                    self._json({"ok": False, "error": "POST only"}, 405)
                 elif u.path == "/file":
                     name = (parse_qs(u.query).get("name") or [""])[0]
                     if name not in _FILE_WHITELIST:
@@ -657,7 +711,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     job = Job()
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.config, job))
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.config, job, port=a.port))
     url = f"http://127.0.0.1:{a.port}/"
     print(f"md-acquire UI on {url}   (Ctrl+C stops)")
     if a.open:

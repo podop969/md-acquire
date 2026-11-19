@@ -1,5 +1,6 @@
 const id = new URLSearchParams(location.search).get('id');
 const $ = s => document.querySelector(s);
+const TOKEN = $('meta[name="ui-token"]').content;
 const message = $('#message'), viewport = $('#viewport'), frame = $('#epub'), canvas = $('#pdf');
 let doc, info, index = 0, count = 0, busy = true, ready = false, saveTimer, savedScroll = 0;
 function scrollRatio() {
@@ -9,7 +10,7 @@ function scrollRatio() {
 function persist() {
   if (!ready) return;
   const value = {index, scroll: Math.max(0, Math.min(1, scrollRatio()))};
-  fetch('/library/position', {method:'POST', keepalive:true, headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, position:value})})
+  fetch('/library/position', {method:'POST', keepalive:true, headers:{'Content-Type':'application/json', 'X-UI-Token':TOKEN}, body:JSON.stringify({id, position:value})})
     .then(r => {if (!r.ok) throw new Error('Could not save reading position.');})
     .catch(e => {message.textContent = e.message;});
 }

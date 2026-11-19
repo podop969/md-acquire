@@ -10,6 +10,10 @@ from pipeline.config import Config
 from pipeline.spec import parse_file
 from pipeline.webui import dashboard_html, make_handler
 
+UI_TOKEN = 'test-ui-token'
+# What the dashboard page sends: loopback Host, same Origin, and the page's UI token.
+UI_HEADERS = {'Host': '127.0.0.1:8619', 'Origin': 'http://127.0.0.1:8619', 'X-UI-Token': UI_TOKEN}
+
 
 def test_add_roundtrip_duplicate_and_filename_safety(tmp_path):
     book = {'title': '../../A Book: A Story', 'authors': ['An Author'],
@@ -83,12 +87,12 @@ def test_search_parses_each_catalogue(monkeypatch):
 def test_add_endpoint_creates_spec_and_rejects_foreign_origin(tmp_path):
     config = tmp_path / 'config.yaml'
     config.write_text(f'specs_dir: {tmp_path / "specs"}\n')
-    handler_type = make_handler(str(config))
+    handler_type = make_handler(str(config), token=UI_TOKEN)
     handler = object.__new__(handler_type)
     handler.path = '/specs'
     payload = json.dumps({'title': 'New book', 'authors': ['Author']}).encode()
     handler.headers = {'Content-Type': 'application/json', 'Content-Length': str(len(payload)),
-                       'Host': '127.0.0.1:8619', 'Origin': 'http://127.0.0.1:8619'}
+                       **UI_HEADERS}
     handler.rfile = io.BytesIO(payload)
     sent = []
     handler._json = lambda data, code=200: sent.append((data, code))
@@ -112,9 +116,10 @@ def test_catalogue_endpoint_excludes_browser_and_browser_endpoint_is_separate(tm
     seen = []
     monkeypatch.setattr(search, '_lookup', lambda source, query, cfg:
                         seen.append(source) or [{'title': query, 'authors': [], 'formats': ['epub']}])
-    handler = object.__new__(webui.make_handler(str(config)))
+    handler = object.__new__(webui.make_handler(str(config), token=UI_TOKEN))
     sent = []
     handler._json = lambda data, code=200: sent.append((data, code))
+    handler.headers = dict(UI_HEADERS)
     handler.path = '/search?q=book'
     handler.do_GET()
     assert set(seen) == {'openlibrary', 'gutenberg', 'arxiv'}
@@ -124,7 +129,7 @@ def test_catalogue_endpoint_excludes_browser_and_browser_endpoint_is_separate(tm
     payload = json.dumps({'q': 'book'}).encode()
     handler.path = '/search/annas'
     handler.headers = {'Content-Type': 'application/json', 'Content-Length': str(len(payload)),
-                       'Host': '127.0.0.1:8619', 'Origin': 'http://127.0.0.1:8619'}
+                       **UI_HEADERS}
     handler.rfile = io.BytesIO(payload)
     handler.do_POST()
     assert seen == ['annas_archive']

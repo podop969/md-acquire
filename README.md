@@ -159,8 +159,15 @@ public scans, and Unpaywall-reported OA copies. Anna's Archive downloads are
 attempted only for specs retaining a user-selected record link; its license is
 recorded as unverified. Login, browser verification, and access restrictions
 are not bypassed. Unresolved specs receive manual links in the wanted list.
-# Download status
+
+## Download status
 
 The dashboard displays the current book, source, elapsed time, and download stage above the log. It shows received bytes for streamed downloads and a progress bar when the server supplies a usable file size. Browser transfers show their stage without an estimated percentage.
 
 For Anna’s Archive, the status card indicates when you may need to complete browser verification. Transfers continue automatically when a supported download link becomes available. Files are checked before being reported as saved. Missing requested formats are reported as partial downloads; authorization, connection, and certificate failures have readable explanations. Completed results remain visible across page reloads until another job starts or the server restarts.
+
+## Licence
+
+md-acquire's own code is MIT-licensed (see `LICENSE`). The repositories under
+`Extract test/` are third-party code and keep their own licences (or lack of one);
+the MIT licence does not apply to them.
