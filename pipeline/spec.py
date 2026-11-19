@@ -6,6 +6,7 @@ import re
 import yaml
 
 from .models import WorkSpec
+from .annas_archive import record_md5
 
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.S)
 
@@ -32,6 +33,13 @@ def parse_file(path: Path) -> WorkSpec:
     title = data.get("title")
     if not title:
         raise ValueError(f"{path.name}: 'title' is required")
+    source = str(data.get('source') or '')
+    source_url = str(data.get('source_url') or '')
+    source_format = str(data.get('source_format') or '')
+    if source == 'annas_archive':
+        record_md5(source_url)
+        if source_format not in ('pdf', 'epub'):
+            raise ValueError("Anna's Archive specs require source_format: pdf or epub. Re-add a supported search result.")
     return WorkSpec(
         key=path.stem,
         title=str(title),
@@ -45,6 +53,7 @@ def parse_file(path: Path) -> WorkSpec:
         priority=str(data.get("priority", "open_access")),
         notes=m.group(2).strip(),
         source_path=path,
+        source=source, source_url=source_url, source_format=source_format,
     )
 
 

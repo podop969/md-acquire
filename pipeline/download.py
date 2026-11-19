@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .http import Client
 from .models import Candidate, WorkSpec
+from .progress import emit
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED = {"CON", "PRN", "AUX", "NUL",
@@ -60,8 +61,18 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
     dest.mkdir(parents=True, exist_ok=True)
     final = dest / filename_for(spec, cand)
     if final.exists():
-        digest = hashlib.sha256(final.read_bytes()).hexdigest()
-        return final, digest
+        emit('validating', 'Checking the existing file before reusing it.')
+        try:
+            validate(final, cand.fmt)
+        except ValueError:
+            if cand.fmt not in ("pdf", "epub"):
+                raise  # the format is unsupported, not the file: leave it alone
+            # Every candidate for this spec targets this same name, so an invalid file
+            # here would fail them all. Keep it aside for inspection; fetch a fresh copy.
+            final.replace(final.with_name(final.name + ".invalid"))
+        else:
+            digest = hashlib.sha256(final.read_bytes()).hexdigest()
+            return final, digest
 
     r = client.get(cand.url, stream=True, allow_redirects=True)
     r.raise_for_status()
@@ -70,6 +81,10 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
         raise ValueError(f"server returned HTML, not {cand.fmt}")
 
     tmp = final.with_suffix(final.suffix + ".part")
+    length = r.headers.get('content-length', '')
+    total = int(length) if str(length).isdigit() and not r.headers.get('content-encoding') else None
+    received = 0
+    emit('downloading', 'Receiving file data.')
     digest = hashlib.sha256()
     try:
         with open(tmp, "wb") as fh:
@@ -77,6 +92,9 @@ def download(client: Client, cand: Candidate, spec: WorkSpec, dest: Path) -> tup
                 if chunk:
                     fh.write(chunk)
                     digest.update(chunk)
+                    received += len(chunk)
+                    emit('downloading', 'Receiving file data.', received=received, total=total)
+        emit('validating', 'Checking the downloaded file format.')
         if looks_like_html(tmp):
             raise ValueError("download body is HTML, not the document")
         validate(tmp, cand.fmt)

@@ -1,7 +1,15 @@
 specs_dir: specs
-out_dir: library
+out_dir: library        # machine-specific folders belong in a local config, not this file
 contact_email: ""       # used for Unpaywall requests; or set ACQUIRE_EMAIL
 min_interval: 1.0       # seconds between requests to the same host
 timeout: 30
 retries: 3
-adapters: [arxiv, openlibrary, gutenberg, unpaywall]
+adapters: [arxiv, openlibrary, gutenberg, unpaywall, annas_archive]
+# Experimental metadata search; uses /search?q=...&check=1.
+annas_archive_url: "https://annas-archive.gl"
+annas_archive_mode: browser
+annas_archive_browser_channel: chrome
+annas_archive_browser_timeout: 120
+# Dedicated browser profile; separate from your normal Chrome profile.
+annas_archive_profile_dir: ".browser/annas-archive"
+annas_archive_download_timeout: 300  # includes browser verification, waiting, and transfer
