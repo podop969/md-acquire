@@ -132,6 +132,39 @@ def test_download_skips_existing_file(fake_client, tmp_path, make_spec, pdf_byte
     assert len(sha) == 64
 
 
+def test_download_replaces_invalid_existing_file(fake_client, tmp_path, make_spec, pdf_bytes):
+    # Every candidate for a spec targets the same filename, so an invalid file left
+    # there (e.g. a truncated earlier download) must not block every later attempt.
+    client = fake_client(
+        {"example.org/book.pdf": FakeResponse(content=pdf_bytes, headers={"content-type": "application/pdf"})}
+    )
+    spec = make_spec()
+    cand = Candidate(source="mock", url="https://example.org/book.pdf", fmt="pdf")
+    existing = tmp_path / filename_for(spec, cand)
+    existing.write_bytes(b"not a pdf")
+
+    saved, sha = download(client, cand, spec, tmp_path)
+
+    assert saved == existing and saved.read_bytes() == pdf_bytes
+    assert len(client.calls) == 1 and len(sha) == 64
+    # Moved aside for inspection, never silently deleted.
+    assert (tmp_path / (existing.name + ".invalid")).read_bytes() == b"not a pdf"
+
+
+def test_download_leaves_existing_file_when_format_is_unsupported(fake_client, tmp_path, make_spec):
+    client = fake_client({})
+    spec = make_spec()
+    cand = Candidate(source="mock", url="https://example.org/book.mobi", fmt="mobi")
+    existing = tmp_path / filename_for(spec, cand)
+    existing.write_bytes(b"some mobi bytes")
+
+    with pytest.raises(ValueError, match="unsupported format"):
+        download(client, cand, spec, tmp_path)
+
+    assert existing.read_bytes() == b"some mobi bytes"
+    assert not list(tmp_path.glob("*.invalid")) and client.calls == []
+
+
 def test_download_rejects_html_payload(fake_client, tmp_path, make_spec):
     client = fake_client(
         {"example.org/book.pdf": FakeResponse(content=b"<html>", headers={"content-type": "text/html"})}

@@ -29,8 +29,17 @@ jobs:
         run: python -m pytest -v
       - name: CLI smoke
         shell: pwsh
+        # pwsh steps only check the LAST command's exit code, so each one is checked here.
+        # bulk exits 1 when any spec stays pending: an in-copyright book has no open copy
+        # and goes to wanted.md, which is the tool working. A crash also exits 1 but never
+        # prints the summary line, so exit 1 passes only when that line is present.
         run: |
           python -m pipeline.cli --help
-          python -m pipeline.bulk --dry-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $log = python -m pipeline.bulk --dry-run
+          $code = $LASTEXITCODE
+          $log
+          if ($code -eq 0 -or ($code -eq 1 -and ($log -match '^bulk done\. '))) { exit 0 }
+          exit $code
         env:
           ACQUIRE_EMAIL: ci@example.org

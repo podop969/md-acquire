@@ -6,12 +6,14 @@ from .base import Adapter
 from .gutenberg import GutenbergAdapter
 from .openlibrary import OpenLibraryAdapter
 from .unpaywall import UnpaywallAdapter
+from .annas_archive import AnnasArchiveAdapter
 
 CLASSES = {
     "arxiv": ArxivAdapter,
     "openlibrary": OpenLibraryAdapter,
     "gutenberg": GutenbergAdapter,
     "unpaywall": UnpaywallAdapter,
+    "annas_archive": AnnasArchiveAdapter,
 }
 
 
